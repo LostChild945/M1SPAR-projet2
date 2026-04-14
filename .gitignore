@@ -1,0 +1,25 @@
+# ── Données générées ─────────────────────────────────────────────────────────
+analyse/data/interactions/
+analyse/data/products/
+analyse/data/users/
+analyse/data/content_embeddings/
+analyse/data/als_item_factors/
+analyse/data/als_user_factors/
+analyse/data/id_mappings/
+analyse/data/bridge_model/
+dataset/raw/
+
+# ── Notebooks ─────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.env
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

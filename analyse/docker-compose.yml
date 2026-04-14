@@ -1,0 +1,8 @@
+services:
+  eda:
+    build: .
+    mem_limit: 8g
+    volumes:
+      - ./data:/app/data:ro
+      - ./outputs:/app/outputs
+      - ./eda_reco.py:/app/eda_reco.py:ro
