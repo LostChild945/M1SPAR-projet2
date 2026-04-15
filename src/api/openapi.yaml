@@ -1,0 +1,373 @@
+openapi: "3.1.0"
+
+info:
+  title: P2 Recommandation Amazon
+  version: "1.0.0"
+  description: >
+    API de recommandation produits Amazon.
+    Combine ALS (warm users/items), Bridge MLP (cold items) et
+    moyenne d'embeddings (cold users).
+    Latence cible P95 < 50 ms via cache Redis.
+
+servers:
+  - url: http://localhost:8000
+    description: Développement local
+
+tags:
+  - name: recommend
+    description: Recommandations personnalisées
+  - name: similar
+    description: Produits similaires (item-to-item)
+  - name: feedback
+    description: Collecte de signal utilisateur
+  - name: ab
+    description: Résultats A/B testing
+
+paths:
+
+  /recommend/{user_id}:
+    get:
+      tags: [recommend]
+      summary: Recommandations personnalisées pour un utilisateur
+      description: >
+        Retourne les N meilleurs produits recommandés.
+        Cascade : Redis cache → ALS inference → Bridge MLP (cold start).
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Identifiant utilisateur Amazon (ex. AGKHLEW2SOWHNMFQIJGBECAF7INQ)
+        - name: n
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 100
+          description: Nombre de recommandations à retourner
+        - name: category
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Filtre optionnel par catégorie Amazon
+            (ex. Electronics, Beauty_and_Personal_Care)
+        - name: exclude_purchased
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+          description: Exclure les produits déjà achetés par l'utilisateur
+      responses:
+        "200":
+          description: Recommandations générées avec succès
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecommendResponse"
+              example:
+                user_id: AGKHLEW2SOWHNMFQIJGBECAF7INQ
+                segment: power_user
+                recommendations:
+                  - product_id: B08N5WRWNW
+                    score: 0.923
+                    source: als
+                    category: Electronics
+                  - product_id: B07XJ8C8F7
+                    score: 0.811
+                    source: bridge
+                    category: Electronics
+                latency_ms: 8
+                cache_hit: true
+        "404":
+          description: Utilisateur inconnu (cold start activé)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Paramètres invalides
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /similar/{product_id}:
+    get:
+      tags: [similar]
+      summary: Produits similaires (item-to-item)
+      description: >
+        Retourne les N produits les plus similaires via similarité cosinus
+        sur les embeddings P1-P16.
+        Usage : section "Vous aimerez aussi" sur la fiche produit.
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: ASIN Amazon du produit de référence
+        - name: n
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 5
+            minimum: 1
+            maximum: 50
+          description: Nombre de produits similaires à retourner
+      responses:
+        "200":
+          description: Produits similaires trouvés
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimilarResponse"
+              example:
+                product_id: B08N5WRWNW
+                similar_products:
+                  - product_id: B07XJ8C8F7
+                    score: 0.941
+                    category: Electronics
+                  - product_id: B09G9FPHY6
+                    score: 0.887
+                    category: Electronics
+                latency_ms: 12
+        "404":
+          description: Produit inconnu
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /feedback:
+    post:
+      tags: [feedback]
+      summary: Collecte de signal utilisateur pour A/B testing
+      description: >
+        Enregistre une interaction utilisateur (clic, achat, skip).
+        Ce signal alimente le prochain batch ALS et les métriques A/B.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FeedbackRequest"
+            example:
+              user_id: AGKHLEW2SOWHNMFQIJGBECAF7INQ
+              product_id: B08N5WRWNW
+              interaction_type: purchase
+              ab_variant: treatment
+              timestamp: "2024-03-15T14:32:00Z"
+      responses:
+        "201":
+          description: Feedback enregistré
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: recorded
+        "422":
+          description: Corps de requête invalide
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /ab_results:
+    get:
+      tags: [ab]
+      summary: Résultats de l'expérience A/B en cours
+      description: >
+        Retourne les métriques CTR, lift et significativité statistique
+        (test Z bilatéral sur proportions, scipy.stats).
+      parameters:
+        - name: experiment_id
+          in: query
+          required: false
+          schema:
+            type: string
+            default: hybrid_vs_als_only
+          description: Identifiant de l'expérience A/B
+        - name: segment
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [power_user, regular_user, casual_user]
+          description: Filtrer les résultats par segment utilisateur
+      responses:
+        "200":
+          description: Résultats A/B disponibles
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ABResultsResponse"
+              example:
+                experiment_id: hybrid_vs_als_only
+                start_date: "2024-03-08"
+                n_days: 7
+                control_ctr: 0.0312
+                treatment_ctr: 0.0341
+                lift_pct: 9.29
+                p_value: 0.0183
+                significant: true
+                n_users_control: 15243
+                n_users_treatment: 15187
+        "404":
+          description: Expérience introuvable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+
+    RecommendItem:
+      type: object
+      required: [product_id, score, source, category]
+      properties:
+        product_id:
+          type: string
+          description: ASIN Amazon
+        score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Score normalisé (ALS dot product ou similarité cosinus)
+        source:
+          type: string
+          enum: [als, bridge, popular]
+          description: >
+            als = facteurs latents ALS (user warm + item warm) ;
+            bridge = Bridge MLP cold start (item cold) ;
+            popular = fallback popularité (user cold sans historique)
+        category:
+          type: string
+
+    RecommendResponse:
+      type: object
+      required: [user_id, segment, recommendations, latency_ms, cache_hit]
+      properties:
+        user_id:
+          type: string
+        segment:
+          type: string
+          enum: [power_user, regular_user, casual_user]
+        recommendations:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecommendItem"
+        latency_ms:
+          type: integer
+          description: Temps de réponse mesuré côté serveur
+        cache_hit:
+          type: boolean
+          description: true si la réponse a été servie depuis Redis
+
+    SimilarItem:
+      type: object
+      required: [product_id, score, category]
+      properties:
+        product_id:
+          type: string
+        score:
+          type: number
+          format: float
+          description: Similarité cosinus sur P1-P16 ∈ [0, 1]
+        category:
+          type: string
+
+    SimilarResponse:
+      type: object
+      required: [product_id, similar_products, latency_ms]
+      properties:
+        product_id:
+          type: string
+        similar_products:
+          type: array
+          items:
+            $ref: "#/components/schemas/SimilarItem"
+        latency_ms:
+          type: integer
+
+    FeedbackRequest:
+      type: object
+      required: [user_id, product_id, interaction_type, ab_variant]
+      properties:
+        user_id:
+          type: string
+        product_id:
+          type: string
+        interaction_type:
+          type: string
+          enum: [click, purchase, skip]
+        ab_variant:
+          type: string
+          enum: [control, treatment]
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601, défaut = now si absent
+
+    ABResultsResponse:
+      type: object
+      required:
+        - experiment_id
+        - start_date
+        - n_days
+        - control_ctr
+        - treatment_ctr
+        - lift_pct
+        - p_value
+        - significant
+        - n_users_control
+        - n_users_treatment
+      properties:
+        experiment_id:
+          type: string
+        start_date:
+          type: string
+          format: date
+        n_days:
+          type: integer
+        control_ctr:
+          type: number
+          format: float
+          description: Click-Through Rate du groupe contrôle (ALS seul)
+        treatment_ctr:
+          type: number
+          format: float
+          description: CTR du groupe traitement (ALS + Bridge hybride)
+        lift_pct:
+          type: number
+          format: float
+          description: Lift relatif en % = (CTR_t - CTR_c) / CTR_c × 100
+        p_value:
+          type: number
+          format: float
+          description: p-value du test Z bilatéral (scipy.stats.proportions_ztest)
+        significant:
+          type: boolean
+          description: true si p_value < 0.05
+        n_users_control:
+          type: integer
+        n_users_treatment:
+          type: integer
+
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string
