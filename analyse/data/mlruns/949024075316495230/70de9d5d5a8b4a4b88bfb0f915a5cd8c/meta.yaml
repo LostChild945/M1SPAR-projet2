@@ -1,0 +1,14 @@
+artifact_uri: file:///app/analyse/data/mlruns/949024075316495230/70de9d5d5a8b4a4b88bfb0f915a5cd8c/artifacts
+end_time: 1776403957237
+entry_point_name: ''
+experiment_id: '949024075316495230'
+lifecycle_stage: active
+run_id: 70de9d5d5a8b4a4b88bfb0f915a5cd8c
+run_name: als_r16_reg0.5_i20
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776403950621
+status: 3
+tags: []
+user_id: root

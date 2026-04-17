@@ -10,6 +10,9 @@ et extrait les facteurs latents :
 Ces facteurs encodent les préférences implicites apprises depuis
 les interactions réelles — ils sont la base du cold start bridge.
 
+Utilise la librairie `implicit` (scipy sparse + BLAS/CUDA) au lieu de
+PySpark ALS — beaucoup plus efficace sur machine unique.
+
 Output :
   data/als_item_factors/    product_id | P1 … P16
   data/als_user_factors/    user_id    | U1 … U16
@@ -19,11 +22,13 @@ Usage :
     python 02_train_als.py
 """
 
+import shutil
+import numpy as np
 import pandas as pd
+import mlflow
 from pathlib import Path
-from pyspark.sql import SparkSession, functions as F
-from pyspark.ml.feature import StringIndexer
-from pyspark.ml.recommendation import ALS
+from scipy.sparse import csr_matrix
+import implicit
 
 DATA_DIR = Path("./data")
 
@@ -38,7 +43,7 @@ DATA_DIR = Path("./data")
 
 TEST_5 = ["All_Beauty", "Amazon_Fashion", "Appliances", "Arts_Crafts_and_Sewing", "Automotive"]
 
-FILTER_CATEGORIES = TEST_5   # ← mettre None pour toutes les catégories
+FILTER_CATEGORIES = ["All_Beauty", "Amazon_Fashion"]   # 2 catégories pour les tests rapides
 
 # =============================================================================
 
@@ -46,113 +51,118 @@ FILTER_CATEGORIES = TEST_5   # ← mettre None pour toutes les catégories
 ALS_RANK         = 16      # dimensions des embeddings → P1-P16 / U1-U16
 ALS_MAX_ITER     = 15      # itérations d'optimisation
 ALS_REG_PARAM    = 0.1     # régularisation L2 (évite le sur-apprentissage)
-ALS_IMPLICIT     = True    # True = implicit feedback (nb interactions), False = ratings
 MIN_INTERACTIONS = 5       # nb minimum d'interactions pour être considéré "warm"
 
 for sub in ("als_item_factors", "als_user_factors", "id_mappings"):
     (DATA_DIR / sub).mkdir(parents=True, exist_ok=True)
 
-spark = (
-    SparkSession.builder
-    .appName("M1SPAR-ALS-Training")
-    .config("spark.driver.memory", "6g")
-    .config("spark.sql.shuffle.partitions", "100")
-    .getOrCreate()
-)
-spark.sparkContext.setLogLevel("ERROR")
+# Nettoie les éventuels dossiers parquet laissés par PySpark
+for legacy in (
+    DATA_DIR / "id_mappings" / "user_id_map.parquet",
+    DATA_DIR / "id_mappings" / "product_id_map.parquet",
+    DATA_DIR / "als_item_factors",
+    DATA_DIR / "als_user_factors",
+):
+    if legacy.is_dir():
+        shutil.rmtree(legacy)
+        legacy.mkdir(parents=True, exist_ok=True)
 
 
 if __name__ == "__main__":
+    mlflow.set_tracking_uri(f"file:{DATA_DIR / 'mlruns'}")
+    mlflow.set_experiment("als_training")
+
     print("Chargement des interactions …")
-    interactions = spark.read.parquet(str(DATA_DIR / "interactions"))
+    interactions = pd.read_parquet(DATA_DIR / "interactions")
     if FILTER_CATEGORIES is not None:
-        interactions = interactions.filter(F.col("category").isin(FILTER_CATEGORIES))
+        interactions = interactions[interactions["category"].isin(FILTER_CATEGORIES)]
         print(f"  → Filtre actif : {FILTER_CATEGORIES}")
-    n_inter = interactions.count()
-    print(f"  → {n_inter:,} interactions")
+    print(f"  → {len(interactions):,} interactions chargées")
 
-    # ── Indexation string → int (ALS requiert des entiers) ──────────────────
+    # ── Filtre MIN_INTERACTIONS ──────────────────────────────────────────────
+    print(f"\nFiltrage des users/produits avec < {MIN_INTERACTIONS} interactions …")
+    user_counts = interactions["user_id"].value_counts()
+    item_counts = interactions["product_id"].value_counts()
+    interactions = interactions[
+        interactions["user_id"].isin(user_counts[user_counts >= MIN_INTERACTIONS].index) &
+        interactions["product_id"].isin(item_counts[item_counts >= MIN_INTERACTIONS].index)
+    ]
+    print(f"  → {len(interactions):,} interactions après filtrage")
+
+    # ── Indexation string → int ──────────────────────────────────────────────
     print("\nIndexation user_id et product_id …")
-    user_indexer = StringIndexer(inputCol="user_id",    outputCol="user_id_int")
-    item_indexer = StringIndexer(inputCol="product_id", outputCol="product_id_int")
+    user_ids  = interactions["user_id"].unique()
+    item_ids  = interactions["product_id"].unique()
 
-    ui_model = user_indexer.fit(interactions)
-    ii_model = item_indexer.fit(interactions)
+    user_to_idx = {u: i for i, u in enumerate(user_ids)}
+    item_to_idx = {p: i for i, p in enumerate(item_ids)}
 
-    interactions = ui_model.transform(interactions)
-    interactions = ii_model.transform(interactions)
+    interactions["user_idx"]    = interactions["user_id"].map(user_to_idx).astype(np.int32)
+    interactions["product_idx"] = interactions["product_id"].map(item_to_idx).astype(np.int32)
+    print(f"  → {len(user_ids):,} users | {len(item_ids):,} produits indexés")
 
-    interactions = interactions.withColumn("user_id_int",    F.col("user_id_int").cast("int"))
-    interactions = interactions.withColumn("product_id_int", F.col("product_id_int").cast("int"))
-
-    # Sauvegarder les mappings id_string ↔ id_int (nécessaires pour la suite)
-    user_map = spark.createDataFrame(
-        list(enumerate(ui_model.labels)), ["user_id_int", "user_id"]
+    # Sauvegarder les mappings id_string ↔ id_int
+    pd.DataFrame({"user_id_int": range(len(user_ids)), "user_id": user_ids}).to_parquet(
+        DATA_DIR / "id_mappings" / "user_id_map.parquet", index=False
     )
-    item_map = spark.createDataFrame(
-        list(enumerate(ii_model.labels)), ["product_id_int", "product_id"]
+    pd.DataFrame({"product_id_int": range(len(item_ids)), "product_id": item_ids}).to_parquet(
+        DATA_DIR / "id_mappings" / "product_id_map.parquet", index=False
     )
-    user_map.write.mode("overwrite").parquet(str(DATA_DIR / "id_mappings" / "user_id_map.parquet"))
-    item_map.write.mode("overwrite").parquet(str(DATA_DIR / "id_mappings" / "product_id_map.parquet"))
-    print(f"  → {len(ui_model.labels):,} users | {len(ii_model.labels):,} produits indexés")
 
-    # ── Construction du signal d'entraînement ───────────────────────────────
-    if ALS_IMPLICIT:
-        # Signal implicite : compter les interactions par paire (confiance)
-        train_df = (
-            interactions
-            .groupBy("user_id_int", "product_id_int")
-            .agg(F.count("*").alias("signal"))
+    # ── Construction de la matrice sparse user × item ────────────────────────
+    print("\nConstruction de la matrice sparse …")
+    signal = (
+        interactions.groupby(["user_idx", "product_idx"])
+        .size()
+        .reset_index(name="count")
+    )
+    del interactions  # libère la RAM
+
+    user_item = csr_matrix(
+        (signal["count"].values.astype(np.float32),
+         (signal["user_idx"].values, signal["product_idx"].values)),
+        shape=(len(user_ids), len(item_ids))
+    )
+    del signal
+    print(f"  → Matrice sparse : {user_item.shape}, {user_item.nnz:,} valeurs non-nulles")
+
+    # ── Entraînement ALS avec MLflow ─────────────────────────────────────────
+    with mlflow.start_run(run_name="als_default"):
+        mlflow.log_param("rank", ALS_RANK)
+        mlflow.log_param("iterations", ALS_MAX_ITER)
+        mlflow.log_param("regularization", ALS_REG_PARAM)
+        mlflow.log_param("min_interactions", MIN_INTERACTIONS)
+        mlflow.log_metric("n_users", len(user_ids))
+        mlflow.log_metric("n_items", len(item_ids))
+        mlflow.log_metric("nnz", user_item.nnz)
+
+        print(f"\nEntraînement ALS (rank={ALS_RANK}, iter={ALS_MAX_ITER}, reg={ALS_REG_PARAM}) …")
+        model = implicit.als.AlternatingLeastSquares(
+            factors=ALS_RANK,
+            iterations=ALS_MAX_ITER,
+            regularization=ALS_REG_PARAM,
+            use_gpu=False,
         )
-        rating_col = "signal"
-        print(f"\nMode implicit feedback — signal = nb d'interactions par paire")
-    else:
-        train_df = interactions.select(
-            "user_id_int", "product_id_int",
-            F.col("rating").alias("signal")
-        ).dropna()
-        rating_col = "signal"
-        print(f"\nMode explicit feedback — signal = rating")
+        model.fit(user_item)
+        print("  ALS entraîné.")
 
-    # ── Entraînement ALS ────────────────────────────────────────────────────
-    print(f"Entraînement ALS (rank={ALS_RANK}, iter={ALS_MAX_ITER}, reg={ALS_REG_PARAM}) …")
-    als = ALS(
-        rank=ALS_RANK,
-        maxIter=ALS_MAX_ITER,
-        regParam=ALS_REG_PARAM,
-        implicitPrefs=ALS_IMPLICIT,
-        userCol="user_id_int",
-        itemCol="product_id_int",
-        ratingCol=rating_col,
-        coldStartStrategy="drop",
-        seed=42,
-    )
-    model = als.fit(train_df)
-    print("  ALS entraîné.")
+        mlflow.set_tag("model_stage", "Production")
 
-    # ── Extraction et sauvegarde des facteurs latents ───────────────────────
+    # ── Extraction et sauvegarde des facteurs latents ────────────────────────
     print("\nExtraction des facteurs latents …")
+    factor_cols_P = [f"P{i+1}" for i in range(ALS_RANK)]
+    factor_cols_U = [f"U{i+1}" for i in range(ALS_RANK)]
 
     # Item factors P1-P16
-    item_factors = model.itemFactors.withColumnRenamed("id", "product_id_int")
-    item_factors = item_factors.join(item_map, on="product_id_int", how="left")
-    for i in range(ALS_RANK):
-        item_factors = item_factors.withColumn(f"P{i+1}", F.col("features")[i])
-    item_factors = item_factors.drop("features")
-    item_factors.write.mode("overwrite").parquet(str(DATA_DIR / "als_item_factors"))
+    item_factors_df = pd.DataFrame(model.item_factors, columns=factor_cols_P)
+    item_factors_df.insert(0, "product_id", item_ids)
+    item_factors_df.to_parquet(DATA_DIR / "als_item_factors" / "item_factors.parquet", index=False)
 
     # User factors U1-U16
-    user_factors = model.userFactors.withColumnRenamed("id", "user_id_int")
-    user_factors = user_factors.join(user_map, on="user_id_int", how="left")
-    for i in range(ALS_RANK):
-        user_factors = user_factors.withColumn(f"U{i+1}", F.col("features")[i])
-    user_factors = user_factors.drop("features")
-    user_factors.write.mode("overwrite").parquet(str(DATA_DIR / "als_user_factors"))
+    user_factors_df = pd.DataFrame(model.user_factors, columns=factor_cols_U)
+    user_factors_df.insert(0, "user_id", user_ids)
+    user_factors_df.to_parquet(DATA_DIR / "als_user_factors" / "user_factors.parquet", index=False)
 
-    n_items = item_factors.count()
-    n_users = user_factors.count()
-    print(f"  → Item factors : {n_items:,} produits  (colonnes P1-P{ALS_RANK})")
-    print(f"  → User factors : {n_users:,} users     (colonnes U1-U{ALS_RANK})")
-
-    spark.stop()
+    print(f"  → Item factors : {len(item_ids):,} produits  (colonnes P1-P{ALS_RANK})")
+    print(f"  → User factors : {len(user_ids):,} users     (colonnes U1-U{ALS_RANK})")
     print("\nALS terminé. Lancer maintenant : python 03_cold_start_bridge.py")

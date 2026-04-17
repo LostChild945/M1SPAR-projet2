@@ -1,0 +1,8 @@
+artifact_location: file:///app/analyse/data/mlruns/994831479137086245
+creation_time: 1776338650538
+experiment_id: '994831479137086245'
+last_update_time: 1776338650538
+lifecycle_stage: active
+name: als_training
+trace_location: null
+workspace: default

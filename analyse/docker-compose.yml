@@ -2,6 +2,8 @@ services:
   eda:
     build: .
     mem_limit: 8g
+    ports:
+      - "4040:4040"
     volumes:
       - ./data:/app/data:ro
       - ./outputs:/app/outputs

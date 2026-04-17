@@ -1,0 +1,8 @@
+artifact_location: file:///app/analyse/data/mlruns/949024075316495230
+creation_time: 1776356319206
+experiment_id: '949024075316495230'
+last_update_time: 1776356319206
+lifecycle_stage: active
+name: als_grid_search
+trace_location: null
+workspace: default
