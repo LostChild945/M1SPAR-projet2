@@ -1,0 +1,10 @@
+artifact_location: file:///app/analyse/data/mlruns/949024075316495230/models/m-f9fbc1cbba4b4001ac83d12f1955ff98/artifacts
+creation_timestamp: 1776404014313
+experiment_id: '949024075316495230'
+last_updated_timestamp: 1776404015615
+model_id: m-f9fbc1cbba4b4001ac83d12f1955ff98
+model_type: null
+name: als_pyfunc
+source_run_id: 5d99d716545645dea9aba9aabf4fd779
+status: 3
+status_message: null

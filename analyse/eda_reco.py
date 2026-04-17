@@ -41,6 +41,8 @@ spark = (
     .config('spark.sql.shuffle.partitions', '20')
     .config('spark.sql.files.maxPartitionBytes', '64m')
     .config('spark.memory.fraction', '0.6')
+    .config('spark.ui.enabled', 'true')
+    .config('spark.ui.port', '4040')
     .getOrCreate()
 )
 spark.sparkContext.setLogLevel('ERROR')

@@ -1,0 +1,132 @@
+services:
+
+  # ── Étape 1 : Arrow → Parquet (interactions / products / users) ──────────
+  prepare:
+    build: .
+    mem_limit: 8g
+    volumes:
+      - ./dataset/raw:/app/dataset/raw:ro
+      - ./analyse:/app/analyse
+    environment:
+      RAW_REVIEWS: /app/dataset/raw/2023/reviews
+      RAW_META:    /app/dataset/raw/2023/metadata
+    command: python 00_prepare_data.py
+
+  # ── Étape 2 : Embeddings de contenu (Sentence Transformers) ─────────────
+  embeddings:
+    build: .
+    mem_limit: 8g
+    shm_size: '2gb'
+    volumes:
+      - ./analyse:/app/analyse
+    command: python 01_compute_content_embeddings.py
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+
+  # ── Étape 3 : Entraînement ALS ───────────────────────────────────────────
+  als:
+    build: .
+    mem_limit: 12g
+    volumes:
+      - ./analyse:/app/analyse
+    command: python 02_train_als.py
+    depends_on:
+      embeddings:
+        condition: service_completed_successfully
+
+  # ── Étape 4 : Bridge model cold start + fusion finale ───────────────────
+  bridge:
+    build: .
+    mem_limit: 12g
+    volumes:
+      - ./analyse:/app/analyse
+    command: python 03_cold_start_bridge.py
+    depends_on:
+      als:
+        condition: service_completed_successfully
+
+  # ── Étape 4bis : Grid search ALS (18 runs, find best model) ──────────────
+  grid_search:
+    build: .
+    mem_limit: 16g
+    volumes:
+      - ./analyse:/app/analyse
+    command: python 04_grid_search_als.py
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+
+  # ── Cache Redis ───────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  # ── API de recommandation ─────────────────────────────────────────────────
+  api:
+    build: ./src/api
+    mem_limit: 6g
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./analyse/data:/app/data:ro
+      - ./api_data:/app/api_data
+    environment:
+      DATA_DIR:          /app/data
+      DB_PATH:           /app/api_data/feedback.db
+      REDIS_HOST:        redis
+      REDIS_PORT:        "6379"
+      EXPERIMENT_START:  "2026-04-14"
+    depends_on:
+      redis:
+        condition: service_started
+
+  # ── MLflow Tracking UI ───────────────────────────────────────────────────
+  mlflow:
+    image: python:3.11-slim
+    command: >
+      bash -c "pip install --no-cache-dir mlflow &&
+      mlflow server --backend-store-uri file:///app/mlruns
+      --host 0.0.0.0 --port 5000"
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./analyse/data/mlruns:/app/mlruns
+
+  # ── Prometheus ───────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      api:
+        condition: service_started
+
+  # ── Grafana ──────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_started
+
+  # ── Streamlit Dashboard ──────────────────────────────────────────────────
+  streamlit:
+    build: ./src/dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_started

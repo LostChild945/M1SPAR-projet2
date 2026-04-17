@@ -36,7 +36,7 @@ BATCH_SIZE = 256
 
 TEST_5 = ["All_Beauty", "Amazon_Fashion", "Appliances", "Arts_Crafts_and_Sewing", "Automotive"]
 
-FILTER_CATEGORIES = TEST_5   # ← mettre None pour traiter toutes les catégories
+FILTER_CATEGORIES = ["All_Beauty", "Amazon_Fashion"]   # 2 catégories pour les tests rapides
 
 # =============================================================================
 
@@ -65,7 +65,11 @@ if __name__ == "__main__":
     print(f"\nChargement du modèle {MODEL_NAME} …")
     model = SentenceTransformer(MODEL_NAME)
 
+    # Extraire les IDs avant de libérer le DataFrame produits
+    product_ids = products["product_id"].values
     corpus = build_corpus(products)
+    del products  # libère ~1-2 GB avant l'encodage
+
     print(f"\nCalcul des embeddings ({len(corpus):,} textes) …")
     embeddings = model.encode(
         corpus,
@@ -73,12 +77,15 @@ if __name__ == "__main__":
         show_progress_bar=True,
         normalize_embeddings=True,   # norme L2 = 1 → cosine similarity = dot product
     )
+    del corpus  # libère la liste de textes dès que l'encodage est terminé
     print(f"  → Shape : {embeddings.shape}")  # (n_products, 384)
 
     print("\nSauvegarde …")
     emb_cols = [f"emb_{i}" for i in range(embeddings.shape[1])]
-    df_emb = pd.DataFrame(embeddings.astype(np.float32), columns=emb_cols)
-    df_emb.insert(0, "product_id", products["product_id"].values)
+    # copy=False évite une 2e copie si l'array est déjà en float32 (cas SentenceTransformer)
+    df_emb = pd.DataFrame(embeddings.astype(np.float32, copy=False), columns=emb_cols)
+    del embeddings  # libère le numpy array dès que le DataFrame est construit
+    df_emb.insert(0, "product_id", product_ids)
     df_emb.to_parquet(OUT_PATH, index=False)
     print(f"  → Sauvegardé : {OUT_PATH}")
     print(f"  → Taille     : {OUT_PATH.stat().st_size / 1e6:.1f} MB")

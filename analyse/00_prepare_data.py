@@ -20,28 +20,15 @@ Usage :
 """
 
 import gc
+import os
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pathlib import Path
 from datasets import load_from_disk
 
-RAW_REVIEWS = Path("../dataset/raw/2023/reviews")
-RAW_META    = Path("../dataset/raw/2023/metadata")
-
-# =============================================================================
-# CONFIGURATION — modifier uniquement cette variable
-# -----------------------------------------------------------------------------
-# Nombre de catégories à traiter (les N premières par ordre alphabétique).
-#   None  → toutes les catégories disponibles
-#   6     → les 6 premières
-#   9     → les 9 premières (jusqu'à CDs_and_Vinyl)
-#   12    → les 12 premières
-# =============================================================================
-
-N_CATEGORIES = 9
-
-# =============================================================================
+RAW_REVIEWS = Path(os.environ.get("RAW_REVIEWS", "../dataset/raw/2023/reviews"))
+RAW_META    = Path(os.environ.get("RAW_META",    "../dataset/raw/2023/metadata"))
 
 OUT_DIR = Path("./data")
 
@@ -244,14 +231,14 @@ if __name__ == "__main__":
     all_reviews = available_categories(RAW_REVIEWS)
     all_meta    = available_categories(RAW_META)
 
-    # Appliquer la limite numérique
-    cats_reviews = all_reviews[:N_CATEGORIES] if N_CATEGORIES else all_reviews
-    cats_meta    = all_meta[:N_CATEGORIES]    if N_CATEGORIES else all_meta
+    # Intersection reviews ∩ metadata — seules les catégories disponibles des deux côtés
+    common_cats  = sorted(set(all_reviews) & set(all_meta))[:4]
+    cats_reviews = common_cats
+    cats_meta    = common_cats
 
-    label = f"{len(cats_reviews)} premières" if N_CATEGORIES else "toutes"
-    print(f"N_CATEGORIES         : {N_CATEGORIES if N_CATEGORIES else 'toutes'}")
-    print(f"Reviews à traiter    : {label} → {cats_reviews}")
-    print(f"Metadata à traiter   : {len(cats_meta)} catégories\n")
+    print(f"Reviews disponibles  : {all_reviews}")
+    print(f"Metadata disponibles : {all_meta}")
+    print(f"Catégories communes  : {common_cats}\n")
 
     # ── 1. Interactions ──────────────────────────────────────────────────
     print("[1/3] Construction table interactions (une catégorie à la fois) …")

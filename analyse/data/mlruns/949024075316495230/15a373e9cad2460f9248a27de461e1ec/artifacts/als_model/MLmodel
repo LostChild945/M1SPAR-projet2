@@ -1,0 +1,4 @@
+artifact_path: als_model
+flavors:
+  python_function:
+    loader_module: mlflow.pyfunc
