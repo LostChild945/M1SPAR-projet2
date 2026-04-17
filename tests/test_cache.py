@@ -10,15 +10,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "api"))
 def test_cache_graceful_degradation_on_get():
     """cache.get retourne None si Redis est indisponible."""
     import cache
-    cache._client = None
+    old_client = cache._client
+    cache._client = False  # False = marqué indisponible dans la logique du module
 
     result = cache.get("some_key")
     assert result is None
+    cache._client = old_client
 
 
 def test_cache_graceful_degradation_on_set():
     """cache.set ne lève pas d'exception si Redis est indisponible."""
     import cache
-    cache._client = None
+    old_client = cache._client
+    cache._client = False  # False = marqué indisponible
 
     cache.set("some_key", {"data": "test"})
+    cache._client = old_client

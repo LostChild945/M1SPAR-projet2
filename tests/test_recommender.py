@@ -14,7 +14,7 @@ def test_warm_user_gets_als_recommendations(mock_state):
 
     from recommender import get_recommendations
 
-    items, segment, is_cold = get_recommendations("USER_000", n=5)
+    items, segment, is_cold = get_recommendations("USER_000", n=5, category=None, exclude_purchased=False)
     assert len(items) == 5
     assert segment == "power_user"
     assert not is_cold
@@ -28,7 +28,7 @@ def test_cold_user_gets_popular_recommendations(mock_state):
 
     from recommender import get_recommendations
 
-    items, segment, is_cold = get_recommendations("UNKNOWN_USER", n=3)
+    items, segment, is_cold = get_recommendations("UNKNOWN_USER", n=3, category=None, exclude_purchased=False)
     assert len(items) == 3
     assert is_cold
     assert all(item.source == "popular" for item in items)
@@ -41,7 +41,7 @@ def test_exclude_purchased(mock_state):
 
     from recommender import get_recommendations
 
-    items, _, _ = get_recommendations("USER_000", n=10, exclude_purchased=True)
+    items, _, _ = get_recommendations("USER_000", n=10, category=None, exclude_purchased=True)
     reco_ids = {item.product_id for item in items}
     assert "PROD_000" not in reco_ids
     assert "PROD_001" not in reco_ids
@@ -54,7 +54,7 @@ def test_category_filter(mock_state):
 
     from recommender import get_recommendations
 
-    items, _, _ = get_recommendations("USER_001", n=5, category="Appliances")
+    items, _, _ = get_recommendations("USER_001", n=5, category="Appliances", exclude_purchased=False)
     for item in items:
         assert item.category == "Appliances"
 
