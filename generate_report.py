@@ -95,12 +95,13 @@ sommaire = [
     "4. Architecture globale du systeme",
     "5. Pipeline de donnees : Bronze, Silver, Gold",
     "6. Qualite des donnees et monitoring",
-    "7. Modeles de Machine Learning",
-    "8. Evaluation et optimisation",
-    "9. API de recommandation",
-    "10. Deploiement et infrastructure",
-    "11. Problemes rencontres et decisions de pivot",
-    "12. Bilan et perspectives",
+    "7. Agregations de donnees : existantes et proposees",
+    "8. Modeles de Machine Learning",
+    "9. Evaluation et optimisation",
+    "10. API de recommandation",
+    "11. Deploiement et infrastructure",
+    "12. Problemes rencontres et decisions de pivot",
+    "13. Bilan et perspectives",
 ]
 for item in sommaire:
     p = doc.add_paragraph(item)
@@ -544,16 +545,183 @@ doc.add_paragraph(
 doc.add_page_break()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 7. MODELES ML
+# 7. AGREGATIONS DE DONNEES
 # ═══════════════════════════════════════════════════════════════════════════
-doc.add_heading("7. Modeles de Machine Learning", level=1)
+doc.add_heading("7. Agregations de donnees : existantes et proposees", level=1)
+
+doc.add_paragraph(
+    "Les agregations transforment les donnees brutes en informations exploitables "
+    "par les modeles et l'API. Cette section presente les agregations deja en place "
+    "dans le pipeline, puis les agregations supplementaires proposees pour enrichir "
+    "le systeme de recommandation."
+)
+
+doc.add_heading("7.1 Agregations existantes", level=2)
+doc.add_paragraph(
+    "Le pipeline actuel (Bronze / Silver / Gold) produit les agregations suivantes :"
+)
+add_table(doc,
+    ["Agregation", "Niveau", "Couche", "Fichier source"],
+    [
+        ["total_interactions, total_purchases, avg_rating", "Par utilisateur", "Bronze", "00_prepare_data.py"],
+        ["segment (power_user / regular_user / casual_user)", "Par utilisateur", "Bronze", "00_prepare_data.py"],
+        ["recency_rank (rang par user, tri par timestamp desc)", "Par interaction", "Silver", "silver_cleaning.py"],
+        ["user_interaction_count (nombre total par user)", "Par interaction", "Silver", "silver_cleaning.py"],
+        ["rf_score (interaction_count / recency_rank)", "Par interaction", "Silver", "silver_cleaning.py"],
+        ["nb_interactions, conversion_rate", "Par produit", "Gold", "gold_features.py"],
+        ["popularity_score (log1p normalise [0,1])", "Par produit", "Gold", "gold_features.py"],
+        ["is_cold (< 5 interactions)", "Par produit", "Gold", "gold_features.py"],
+    ],
+)
+doc.add_paragraph(
+    "Ces agregations couvrent les besoins de base du systeme : segmentation utilisateur, "
+    "scoring de popularite, et tagging cold start. Elles sont calculees dans les couches "
+    "Silver et Gold du pipeline ETL via PySpark (window functions et groupBy)."
+)
+
+doc.add_heading("7.2 Agregation par categorie", level=2)
+doc.add_paragraph(
+    "Proposee : calculer nb_users, nb_products, avg_rating, conversion_rate "
+    "et avg_interactions_per_user par categorie Amazon."
+)
+doc.add_paragraph(
+    "Justification : les 5 categories du sous-ensemble ont des profils tres differents. "
+    "Automotive represente 58 % du volume mais cela ne signifie pas que c'est la categorie "
+    "avec le meilleur taux de conversion. Cette agregation revelerait les categories "
+    "sous-exploitees (peu d'interactions mais bon taux de conversion) et les categories "
+    "a risque (beaucoup de volume mais faible satisfaction). Elle est aussi utile pour "
+    "ponderer les recommandations cross-categories : si un utilisateur achete principalement "
+    "dans une categorie a fort taux de conversion, on peut lui proposer des produits similaires "
+    "dans une categorie adjacente."
+)
+
+doc.add_heading("7.3 Agregation par saisonnalite (categorie x mois)", level=2)
+doc.add_paragraph(
+    "Proposee : calculer nb_interactions, conversion_rate et avg_rating "
+    "par couple (category, year_month)."
+)
+doc.add_paragraph(
+    "Justification : les comportements d'achat sont saisonniers (Black Friday, Noel, Prime Day). "
+    "Agreger par categorie et par mois permet de detecter les pics de demande par categorie "
+    "et d'adapter les recommandations en fonction de la saison. Par exemple, Appliances peut "
+    "avoir un pic en novembre que All_Beauty n'a pas. C'est aussi un input direct pour le "
+    "drift monitor : si une categorie chute un mois donne, c'est un signal d'alerte qui peut "
+    "declencher un re-entrainement du modele."
+)
+
+doc.add_heading("7.4 Agregation du profil temporel produit", level=2)
+doc.add_paragraph(
+    "Proposee : calculer first_interaction_date, last_interaction_date, lifespan_days "
+    "et trend (croissant / decroissant / stable) par produit."
+)
+doc.add_paragraph(
+    "Justification : un produit avec 100 interactions reparties sur 2 ans et un produit "
+    "avec 100 interactions concentrees sur 1 semaine n'ont pas le meme profil. Le trend "
+    "permet de detecter les produits en train de disparaitre (plus aucune interaction recente) "
+    "versus les produits en croissance. Recommander un produit en declin est une mauvaise "
+    "experience utilisateur. Cette feature pourrait etre integree comme filtre post-scoring : "
+    "penaliser les produits dont le trend est decroissant dans le classement final."
+)
+
+doc.add_heading("7.5 Agregation de la diversite d'achat utilisateur", level=2)
+doc.add_paragraph(
+    "Proposee : calculer nb_categories_distinctes, category_principale et "
+    "indice_diversite (entropie de Shannon sur les categories) par utilisateur."
+)
+add_code_block(doc, "Entropie de Shannon : H = -SUM(p_i * log2(p_i)) pour chaque categorie i")
+doc.add_paragraph(
+    "Justification : un utilisateur qui achete dans 5 categories differentes et un "
+    "utilisateur qui n'achete que dans Automotive n'attendent pas les memes recommandations. "
+    "L'indice de diversite permet de personnaliser la strategie : pour un utilisateur diversifie, "
+    "on peut proposer du cross-category ; pour un utilisateur specialise, on reste dans sa categorie "
+    "dominante. Cela enrichit la segmentation au-dela du simple volume (power/regular/casual) "
+    "en ajoutant une dimension thematique."
+)
+
+doc.add_heading("7.6 Agregation de la qualite des reviews par produit", level=2)
+doc.add_paragraph(
+    "Proposee : calculer avg_helpful_votes, pct_verified_purchases, "
+    "et sentiment_ratio (pourcentage de notes 4-5 etoiles versus 1-2 etoiles) par produit."
+)
+doc.add_paragraph(
+    "Justification : le champ helpful_vote est un signal de qualite deja present dans le dataset "
+    "mais pas encore agrege. Un produit avec beaucoup de votes helpful a des reviews de qualite, "
+    "ce qui est un indicateur de confiance. Le pct_verified_purchases mesure la proportion d'achats "
+    "reels versus reviews non verifiees. Ces features pourraient ponderer les interactions dans ALS : "
+    "une interaction sur un produit de confiance vaut plus qu'une interaction sur un produit douteux. "
+    "Cela ameliorerait directement la qualite des recommandations sans modifier l'algorithme."
+)
+
+doc.add_heading("7.7 Agregation de la matrice segment x categorie", level=2)
+doc.add_paragraph(
+    "Proposee : calculer avg_rating, conversion_rate et nb_interactions "
+    "par couple (segment, category)."
+)
+add_table(doc,
+    ["", "All_Beauty", "Amazon_Fashion", "Appliances", "Arts_Crafts", "Automotive"],
+    [
+        ["power_user", "conv_rate", "conv_rate", "conv_rate", "conv_rate", "conv_rate"],
+        ["regular_user", "conv_rate", "conv_rate", "conv_rate", "conv_rate", "conv_rate"],
+        ["casual_user", "conv_rate", "conv_rate", "conv_rate", "conv_rate", "conv_rate"],
+    ],
+)
+doc.add_paragraph(
+    "Justification : les power users n'achetent pas les memes categories que les casual users. "
+    "Cette matrice revele les affinites segment-categorie. Elle est particulierement utile pour "
+    "le cold start : pour un nouvel utilisateur dont on connait le segment (via une heuristique "
+    "basee sur son premier achat), on peut deja biaiser les recommandations vers les categories "
+    "preferees de son segment, au lieu de tomber sur un simple fallback popularite global."
+)
+
+doc.add_heading("7.8 Agregation du pattern temporel utilisateur", level=2)
+doc.add_paragraph(
+    "Proposee : calculer avg_days_between_purchases, regularity_score "
+    "(ecart-type normalise des intervalles entre achats) et last_purchase_days_ago "
+    "par utilisateur."
+)
+doc.add_paragraph(
+    "Justification : distinguer les acheteurs reguliers (tous les mois) des acheteurs "
+    "ponctuels (une fois par an). Le last_purchase_days_ago detecte les utilisateurs en "
+    "train de churner. Cela permet de prioriser les recommandations pour les utilisateurs "
+    "a risque de churn et d'adapter la frequence des suggestions. Un utilisateur regulier "
+    "qui n'a pas achete depuis 3 mois est un signal d'alerte ; un acheteur annuel qui n'a "
+    "pas achete depuis 3 mois est normal."
+)
+
+doc.add_heading("7.9 Synthese et impact sur le systeme", level=2)
+add_table(doc,
+    ["Agregation", "Niveau", "Impact principal"],
+    [
+        ["Stats par categorie", "Categorie", "Comparaison et ponderation cross-category"],
+        ["Saisonnalite", "Categorie x Mois", "Recommandations contextuelles, drift detection"],
+        ["Profil temporel produit", "Produit", "Eviter de recommander des produits en declin"],
+        ["Diversite d'achat", "Utilisateur", "Strategie cross-category vs intra-category"],
+        ["Qualite des reviews", "Produit", "Ponderation de la confiance dans ALS"],
+        ["Matrice segment x categorie", "Segment x Categorie", "Cold start plus intelligent"],
+        ["Pattern temporel user", "Utilisateur", "Detection de churn, frequence de suggestion"],
+    ],
+)
+doc.add_paragraph(
+    "Les trois agregations les plus impactantes pour le systeme actuel sont : "
+    "(1) la diversite d'achat, qui ameliore directement le recommender en personnalisant "
+    "la strategie cross-category ; (2) la qualite des reviews, qui ameliore ALS via une "
+    "ponderation de confiance sur les interactions ; et (3) la saisonnalite, qui rend les "
+    "recommandations contextuelles et alimente le drift monitor."
+)
+
+doc.add_page_break()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 8. MODELES ML
+# ═══════════════════════════════════════════════════════════════════════════
+doc.add_heading("8. Modeles de Machine Learning", level=1)
 
 doc.add_paragraph(
     "Le systeme utilise une architecture hybride a 3 couches qui combine collaborative filtering "
     "et content-based filtering pour couvrir 100 % du catalogue (warm + cold)."
 )
 
-doc.add_heading("7.1 Sentence Transformers : embeddings de contenu", level=2)
+doc.add_heading("8.1 Sentence Transformers : embeddings de contenu", level=2)
 add_table(doc,
     ["Parametre", "Valeur"],
     [
@@ -576,7 +744,7 @@ doc.add_paragraph(
     "n'apporterait pas de gain significatif vu que les embeddings sont ensuite projetes en 16 dimensions."
 )
 
-doc.add_heading("7.2 ALS : factorisation matricielle", level=2)
+doc.add_heading("8.2 ALS : factorisation matricielle", level=2)
 doc.add_paragraph(
     "ALS (Alternating Least Squares) est l'algorithme principal du systeme. Il decompose "
     "la matrice d'interactions user-item en deux matrices de rang faible :"
@@ -606,7 +774,7 @@ als_reasons = [
 for r in als_reasons:
     doc.add_paragraph(r, style="List Bullet")
 
-doc.add_heading("7.3 Bridge Model : resolution du cold start", level=2)
+doc.add_heading("8.3 Bridge Model : resolution du cold start", level=2)
 doc.add_paragraph(
     "Le probleme : ALS produit des embeddings excellents pour les produits warm (>= 5 interactions) "
     "mais ne couvre pas les produits cold. Sentence Transformers couvre tout le catalogue "
@@ -646,16 +814,31 @@ add_table(doc,
 doc.add_page_break()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 8. EVALUATION ET OPTIMISATION
+# 9. EVALUATION ET OPTIMISATION
 # ═══════════════════════════════════════════════════════════════════════════
-doc.add_heading("8. Evaluation et optimisation", level=1)
+doc.add_heading("9. Evaluation et optimisation", level=1)
 
-doc.add_heading("8.1 Metrique principale : NDCG@10", level=2)
+doc.add_heading("9.1 Metrique principale : NDCG@10 et Lift", level=2)
 doc.add_paragraph(
     "Le NDCG (Normalized Discounted Cumulative Gain) a 10 est la metrique standard "
     "pour evaluer les systemes de recommandation. Elle mesure la qualite du classement "
-    "des recommandations en penalisant les items pertinents places trop bas."
+    "des recommandations en penalisant les items pertinents places trop bas dans la liste. "
+    "Un NDCG@10 de 1.0 signifie que tous les items pertinents sont dans le top 10 et dans l'ordre parfait ; "
+    "un score de 0.0 signifie qu'aucun item pertinent n'apparait dans le top 10."
 )
+doc.add_paragraph(
+    "Le lift mesure l'amelioration relative du modele ALS par rapport a la baseline de popularite. "
+    "Il se calcule comme suit :"
+)
+add_code_block(doc, "Lift (%) = (NDCG_ALS - NDCG_popularite) / NDCG_popularite x 100")
+doc.add_paragraph(
+    "Un lift positif signifie que le modele ALS recommande mieux que la simple popularite. "
+    "Un lift negatif signifie que la baseline de popularite surpasse ALS, ce qui arrive "
+    "typiquement quand les donnees sont extremement creuses : la popularite est une heuristique "
+    "robuste car elle recommande les produits les plus frequents, qui ont mecaniquement plus "
+    "de chances d'apparaitre dans le test set."
+)
+
 doc.add_paragraph(
     "Protocole d'evaluation :"
 )
@@ -668,7 +851,38 @@ eval_steps = [
 for e in eval_steps:
     doc.add_paragraph(e, style="List Bullet")
 
-doc.add_heading("8.2 Grid search des hyperparametres", level=2)
+doc.add_paragraph(
+    "Resultats obtenus sur le sous-ensemble de 2 categories (All Beauty, Amazon Fashion) :"
+)
+add_table(doc,
+    ["Modele", "NDCG@10", "Lift vs popularite"],
+    [
+        ["Baseline popularite", "0.0010", "-"],
+        ["ALS (rank=32, reg=0.5, iter=10) — meilleur run", "0.0007", "-29.0 %"],
+        ["ALS (rank=32, reg=0.01, iter=10)", "0.0006", "-44.0 %"],
+        ["ALS (rank=16, reg=0.5, iter=20)", "0.0005", "-55.9 %"],
+        ["ALS (rank=8, reg=0.5, iter=10)", "0.0001", "-92.4 %"],
+    ],
+)
+
+doc.add_paragraph(
+    "Analyse du lift negatif : sur ce sous-ensemble de donnees, le lift est systematiquement negatif. "
+    "Cela s'explique par la sparsity extreme (99,9999 %) combinee au filtrage sur seulement 2 categories. "
+    "Avec 91,6 % des utilisateurs ayant moins de 5 interactions, ALS ne dispose pas de suffisamment "
+    "de signal pour construire des facteurs latents fiables. La baseline popularite, qui recommande "
+    "les produits les plus frequents toutes categories confondues, beneficie d'un avantage statistique "
+    "dans ce contexte : les produits populaires ont mecaniquement plus de chances d'apparaitre dans "
+    "le test set d'un utilisateur quelconque."
+)
+doc.add_paragraph(
+    "Ce resultat est attendu et documente dans la litterature (Dacrema et al., 2019 : "
+    "'Are We Really Making Much Progress?'). Il justifie pleinement l'architecture hybride mise en place : "
+    "le bridge model et les embeddings semantiques compensent les faiblesses d'ALS sur les entites cold, "
+    "tandis que l'A/B testing en production permettra de mesurer le lift reel sur le trafic utilisateur "
+    "avec un volume d'interactions suffisant."
+)
+
+doc.add_heading("9.2 Grid search des hyperparametres", level=2)
 doc.add_paragraph(
     "Un grid search systematique explore 18 combinaisons d'hyperparametres (04_grid_search_als.py) :"
 )
@@ -685,7 +899,7 @@ doc.add_paragraph(
     "nombre de facteurs user/item. Le meilleur run est automatiquement tague 'Production'."
 )
 
-doc.add_heading("8.3 Pistes d'optimisation identifiees", level=2)
+doc.add_heading("9.3 Pistes d'optimisation identifiees", level=2)
 optimisations = [
     ("Ponderation par helpful_vote",
      "Les 7,6 millions de votes 'helpful' pourraient ponderer la confiance accordee a chaque interaction dans ALS."),
@@ -714,11 +928,11 @@ for title, desc in optimisations:
 doc.add_page_break()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 9. API
+# 10. API
 # ═══════════════════════════════════════════════════════════════════════════
-doc.add_heading("9. API de recommandation", level=1)
+doc.add_heading("10. API de recommandation", level=1)
 
-doc.add_heading("9.1 Choix technologiques", level=2)
+doc.add_heading("10.1 Choix technologiques", level=2)
 doc.add_paragraph(
     "L'API est construite avec FastAPI, un framework web Python asynchrone. "
     "Ce choix est motive par :"
@@ -732,7 +946,7 @@ api_reasons = [
 for r in api_reasons:
     doc.add_paragraph(r, style="List Bullet")
 
-doc.add_heading("9.2 Endpoints", level=2)
+doc.add_heading("10.2 Endpoints", level=2)
 add_table(doc,
     ["Endpoint", "Methode", "Description", "Parametres"],
     [
@@ -744,7 +958,7 @@ add_table(doc,
     ],
 )
 
-doc.add_heading("9.3 Cache Redis", level=2)
+doc.add_heading("10.3 Cache Redis", level=2)
 doc.add_paragraph(
     "Un cache Redis est place devant le moteur de recommandation pour garantir la latence cible (P95 < 50 ms). "
     "La cle de cache encode tous les parametres de la requete : reco:{user_id}:{n}:{category}:{exclude_purchased}. "
@@ -756,7 +970,7 @@ doc.add_paragraph(
     "a Prometheus pour le monitoring."
 )
 
-doc.add_heading("9.4 A/B Testing integre", level=2)
+doc.add_heading("10.4 A/B Testing integre", level=2)
 doc.add_paragraph(
     "Le systeme integre un framework d'A/B testing :"
 )
@@ -771,7 +985,7 @@ ab_features = [
 for f in ab_features:
     doc.add_paragraph(f, style="List Bullet")
 
-doc.add_heading("9.5 Chargement des donnees en memoire", level=2)
+doc.add_heading("10.5 Chargement des donnees en memoire", level=2)
 doc.add_paragraph(
     "Au demarrage, l'API charge en RAM l'integralite des embeddings produits et utilisateurs "
     "(fichiers Parquet). Les matrices P1-P16 et U1-U16 sont stockees sous forme de tableaux NumPy "
@@ -786,11 +1000,11 @@ doc.add_paragraph(
 doc.add_page_break()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 10. DEPLOIEMENT
+# 11. DEPLOIEMENT
 # ═══════════════════════════════════════════════════════════════════════════
-doc.add_heading("10. Deploiement et infrastructure", level=1)
+doc.add_heading("11. Deploiement et infrastructure", level=1)
 
-doc.add_heading("10.1 Docker Compose : 11 services", level=2)
+doc.add_heading("11.1 Docker Compose : 11 services", level=2)
 doc.add_paragraph(
     "L'ensemble du systeme est deploye via un seul fichier docker-compose.yml "
     "qui orchestre 11 services avec leurs dependances :"
@@ -812,7 +1026,7 @@ add_table(doc,
     ],
 )
 
-doc.add_heading("10.2 Monitoring en production", level=2)
+doc.add_heading("11.2 Monitoring en production", level=2)
 doc.add_paragraph(
     "Le monitoring repose sur la stack Prometheus + Grafana :"
 )
@@ -826,7 +1040,7 @@ monitoring_details = [
 for m in monitoring_details:
     doc.add_paragraph(m, style="List Bullet")
 
-doc.add_heading("10.3 Dashboard Streamlit", level=2)
+doc.add_heading("11.3 Dashboard Streamlit", level=2)
 doc.add_paragraph(
     "Le dashboard Streamlit offre une interface interactive en 3 onglets :"
 )
@@ -838,7 +1052,7 @@ tabs = [
 for t in tabs:
     doc.add_paragraph(t, style="List Bullet")
 
-doc.add_heading("10.4 Tests", level=2)
+doc.add_heading("11.4 Tests", level=2)
 doc.add_paragraph("La suite de tests couvre :")
 test_details = [
     "Tests unitaires (pytest) : recommender, A/B testing, cache, schemas, drift monitor.",
@@ -848,7 +1062,7 @@ test_details = [
 for t in test_details:
     doc.add_paragraph(t, style="List Bullet")
 
-doc.add_heading("10.5 CI/CD", level=2)
+doc.add_heading("11.5 CI/CD", level=2)
 doc.add_paragraph(
     "Un pipeline GitHub Actions est en place avec du linting et des commits semantiques. "
     "Les merges sont controles via pull requests sur la branche develop."
@@ -857,9 +1071,9 @@ doc.add_paragraph(
 doc.add_page_break()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 11. PROBLEMES RENCONTRES
+# 12. PROBLEMES RENCONTRES
 # ═══════════════════════════════════════════════════════════════════════════
-doc.add_heading("11. Problemes rencontres et decisions de pivot", level=1)
+doc.add_heading("12. Problemes rencontres et decisions de pivot", level=1)
 
 problems = [
     ("Incompatibilite HuggingFace datasets v3+",
@@ -903,7 +1117,7 @@ problems = [
 ]
 
 for i, (title, problem, solution) in enumerate(problems, 1):
-    doc.add_heading(f"11.{i} {title}", level=2)
+    doc.add_heading(f"12.{i} {title}", level=2)
     p = doc.add_paragraph()
     run = p.add_run("Probleme : ")
     run.bold = True
@@ -916,11 +1130,11 @@ for i, (title, problem, solution) in enumerate(problems, 1):
 doc.add_page_break()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 12. BILAN
+# 13. BILAN
 # ═══════════════════════════════════════════════════════════════════════════
-doc.add_heading("12. Bilan et perspectives", level=1)
+doc.add_heading("13. Bilan et perspectives", level=1)
 
-doc.add_heading("12.1 Ce qui a ete realise", level=2)
+doc.add_heading("13.1 Ce qui a ete realise", level=2)
 realisations = [
     "Pipeline de donnees complet (Bronze/Silver/Gold) avec qualite validee par Great Expectations.",
     "Systeme de recommandation hybride couvrant 100 % du catalogue (warm + cold).",
@@ -936,7 +1150,7 @@ realisations = [
 for r in realisations:
     doc.add_paragraph(r, style="List Bullet")
 
-doc.add_heading("12.2 Choix technologiques valides", level=2)
+doc.add_heading("13.2 Choix technologiques valides", level=2)
 add_table(doc,
     ["Choix", "Resultat"],
     [
@@ -949,7 +1163,7 @@ add_table(doc,
     ],
 )
 
-doc.add_heading("12.3 Perspectives d'evolution", level=2)
+doc.add_heading("13.3 Perspectives d'evolution", level=2)
 perspectives = [
     "Online learning : integrer le feedback collecte pour mettre a jour le modele en continu.",
     "Deep learning : remplacer ALS par un modele neuronal (e.g., NCF, BERT4Rec) pour capturer des patterns plus complexes.",
@@ -961,7 +1175,7 @@ perspectives = [
 for p_text in perspectives:
     doc.add_paragraph(p_text, style="List Bullet")
 
-doc.add_heading("12.4 Conclusion", level=2)
+doc.add_heading("13.4 Conclusion", level=2)
 doc.add_paragraph(
     "Ce projet demontre la construction d'un systeme de recommandation de bout en bout, "
     "de l'ingestion de 34 millions d'interactions a un service temps reel monitorable en production. "
