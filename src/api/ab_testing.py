@@ -39,7 +39,7 @@ def get_ab_results(experiment_id: str, segment: str | None) -> ABResultsResponse
     p_value = 1.0
     if n_c > 0 and n_t > 0 and (clicks_c + clicks_t) > 0:
         p_pool = (clicks_c + clicks_t) / (n_c + n_t)
-        se = (p_pool * (1 - p_pool) * (1 / n_c + 1 / n_t)) ** 0.5
+        se = max(p_pool * (1 - p_pool) * (1 / n_c + 1 / n_t), 0.0) ** 0.5
         if se > 0:
             z = (ctr_t - ctr_c) / se
             p_value = float(2 * norm.sf(abs(z)))
